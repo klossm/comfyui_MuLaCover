@@ -1,0 +1,595 @@
+{
+  "id": "d0e7cbf0-9d22-4f59-ba08-e3a71da70c58",
+  "revision": 0,
+  "last_node_id": 86,
+  "last_link_id": 89,
+  "nodes": [
+    {
+      "id": 82,
+      "type": "MuLaCoverLoadMIDI",
+      "pos": [
+        -248.16885311348187,
+        657.7654409945129
+      ],
+      "size": [
+        305.81268777367643,
+        107.44585710234912
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "midi_file",
+          "name": "midi_file",
+          "type": "COMBO",
+          "widget": {
+            "name": "midi_file"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "midi",
+          "name": "midi",
+          "type": "MIDI",
+          "links": [
+            86
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MuLaCoverLoadMIDI"
+      },
+      "widgets_values": [
+        "melody.mid",
+        null
+      ],
+      "widgets_values_named": {
+        "midi_file": "melody.mid",
+        "📁 上传 MIDI 文件": null
+      }
+    },
+    {
+      "id": 83,
+      "type": "MuLaCoverLoadMIDI",
+      "pos": [
+        -228.86120080118428,
+        827.0991120588383
+      ],
+      "size": [
+        305.81268777367643,
+        107.44585710234912
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "midi_file",
+          "name": "midi_file",
+          "type": "COMBO",
+          "widget": {
+            "name": "midi_file"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "midi",
+          "name": "midi",
+          "type": "MIDI",
+          "links": [
+            87
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MuLaCoverLoadMIDI"
+      },
+      "widgets_values": [
+        "chord.mid",
+        null
+      ],
+      "widgets_values_named": {
+        "midi_file": "chord.mid",
+        "📁 上传 MIDI 文件": null
+      }
+    },
+    {
+      "id": 84,
+      "type": "MuLaCoverLoadMIDI",
+      "pos": [
+        -232.53671349374576,
+        1011.5344540932724
+      ],
+      "size": [
+        305.81268777367643,
+        107.44585710234912
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "midi_file",
+          "name": "midi_file",
+          "type": "COMBO",
+          "widget": {
+            "name": "midi_file"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "midi",
+          "name": "midi",
+          "type": "MIDI",
+          "links": [
+            88
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MuLaCoverLoadMIDI"
+      },
+      "widgets_values": [
+        "drums.mid",
+        null
+      ],
+      "widgets_values_named": {
+        "midi_file": "drums.mid",
+        "📁 上传 MIDI 文件": null
+      }
+    },
+    {
+      "id": 72,
+      "type": "MuLaCoverLoader",
+      "pos": [
+        -227.53168916953024,
+        272.51906847335397
+      ],
+      "size": [
+        284.0443335629909,
+        106
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "device",
+          "name": "device",
+          "type": "COMBO",
+          "widget": {
+            "name": "device"
+          },
+          "link": null
+        },
+        {
+          "label": "main_dtype",
+          "name": "main_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "main_dtype"
+          },
+          "link": null
+        },
+        {
+          "label": "keep_in_ram",
+          "name": "keep_in_ram",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "keep_in_ram"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "pipe",
+          "name": "pipe",
+          "type": "MULACOVER_PIPE",
+          "links": [
+            83
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MuLaCoverLoader"
+      },
+      "widgets_values": [
+        "cuda:0",
+        "bfloat16",
+        true
+      ],
+      "widgets_values_named": {
+        "device": "cuda:0",
+        "main_dtype": "bfloat16",
+        "keep_in_ram": true
+      }
+    },
+    {
+      "id": 79,
+      "type": "LoadAudio",
+      "pos": [
+        -231.51904477413146,
+        447.8826510263792
+      ],
+      "size": [
+        282.798828125,
+        136
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "COMBO",
+          "widget": {
+            "name": "audio"
+          },
+          "link": null
+        },
+        {
+          "label": "audioUI",
+          "name": "audioUI",
+          "type": "AUDIO_UI",
+          "widget": {
+            "name": "audioUI"
+          },
+          "link": null
+        },
+        {
+          "label": "upload",
+          "name": "upload",
+          "type": "AUDIOUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "AUDIO",
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            85
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.35.0",
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "不只是场梦#翻唱.wav",
+        null,
+        null
+      ],
+      "widgets_values_named": {
+        "audio": "不只是场梦#翻唱.wav",
+        "upload": null
+      }
+    },
+    {
+      "id": 74,
+      "type": "PreviewAudio",
+      "pos": [
+        791.5676886774501,
+        330.437215254707
+      ],
+      "size": [
+        429.2722166776664,
+        171.877084522558
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 84
+        },
+        {
+          "label": "audioUI",
+          "name": "audioUI",
+          "type": "AUDIO_UI",
+          "widget": {
+            "name": "audioUI"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.35.0",
+        "Node name for S&R": "PreviewAudio"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 73,
+      "type": "MuLaCoverGenerate",
+      "pos": [
+        306.8262860250878,
+        331.0106236039209
+      ],
+      "size": [
+        428.6695432592986,
+        524.3349828163484
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "pipe",
+          "name": "pipe",
+          "type": "MULACOVER_PIPE",
+          "link": 83
+        },
+        {
+          "label": "ref_audio",
+          "name": "ref_audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 85
+        },
+        {
+          "label": "melody_midi",
+          "name": "melody_midi",
+          "shape": 7,
+          "type": "MIDI",
+          "link": 86
+        },
+        {
+          "label": "chord_midi",
+          "name": "chord_midi",
+          "shape": 7,
+          "type": "MIDI",
+          "link": 87
+        },
+        {
+          "label": "drum_midi",
+          "name": "drum_midi",
+          "shape": 7,
+          "type": "MIDI",
+          "link": 88
+        },
+        {
+          "label": "lyrics",
+          "name": "lyrics",
+          "type": "STRING",
+          "widget": {
+            "name": "lyrics"
+          },
+          "link": null
+        },
+        {
+          "label": "tags",
+          "name": "tags",
+          "type": "STRING",
+          "widget": {
+            "name": "tags"
+          },
+          "link": null
+        },
+        {
+          "label": "seed",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "label": "temperature",
+          "name": "temperature",
+          "type": "FLOAT",
+          "widget": {
+            "name": "temperature"
+          },
+          "link": null
+        },
+        {
+          "label": "topk",
+          "name": "topk",
+          "type": "INT",
+          "widget": {
+            "name": "topk"
+          },
+          "link": null
+        },
+        {
+          "label": "cfg_scale",
+          "name": "cfg_scale",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg_scale"
+          },
+          "link": null
+        },
+        {
+          "label": "max_audio_length",
+          "name": "max_audio_length",
+          "type": "FLOAT",
+          "widget": {
+            "name": "max_audio_length"
+          },
+          "link": null
+        },
+        {
+          "label": "bpm",
+          "name": "bpm",
+          "type": "INT",
+          "widget": {
+            "name": "bpm"
+          },
+          "link": null
+        },
+        {
+          "label": "symbolic_output",
+          "name": "symbolic_output",
+          "type": "STRING",
+          "widget": {
+            "name": "symbolic_output"
+          },
+          "link": null
+        },
+        {
+          "label": "save_symbolic",
+          "name": "save_symbolic",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_symbolic"
+          },
+          "link": null
+        },
+        {
+          "label": "unload_after_generate",
+          "name": "unload_after_generate",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "unload_after_generate"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            84
+          ]
+        },
+        {
+          "label": "symbolic_dir",
+          "name": "symbolic_dir",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MuLaCoverGenerate"
+      },
+      "widgets_values": [
+        "[Intro]\n\n[Verse]\n忽然下雨该往哪躲\n妈说会秃头惨了我\n放眼前方多么辽阔\n看不见树像片沙漠\n\n[Verse]\n还好一栋房子门没锁\n我也累了 刚好有个地方坐\n空荡 请问是谁闯了祸\n温室底下 竟没有花朵\n\n[Chorus]\n我说这世界怎么了\n最珍贵的都消失了 \n冬天去哪里了\n明天住哪里呢\n有谁知道答案呢",
+        "topic:[Heartbreak and longing between estranged lovers]; genre:[contemporary R&B, neo soul, quiet storm]; instrument:[808 bass, Rhodes piano, R&B drums, saxophone, female vocal]; mood:[sultry, soulful, melancholic, yearning]",
+        151221889645673,
+        "randomize",
+        1,
+        250,
+        2.5,
+        60,
+        0,
+        "",
+        "0",
+        ""
+      ],
+      "widgets_values_named": {
+        "lyrics": "[Intro]\n\n[Verse]\n忽然下雨该往哪躲\n妈说会秃头惨了我\n放眼前方多么辽阔\n看不见树像片沙漠\n\n[Verse]\n还好一栋房子门没锁\n我也累了 刚好有个地方坐\n空荡 请问是谁闯了祸\n温室底下 竟没有花朵\n\n[Chorus]\n我说这世界怎么了\n最珍贵的都消失了 \n冬天去哪里了\n明天住哪里呢\n有谁知道答案呢",
+        "tags": "topic:[Heartbreak and longing between estranged lovers]; genre:[contemporary R&B, neo soul, quiet storm]; instrument:[808 bass, Rhodes piano, R&B drums, saxophone, female vocal]; mood:[sultry, soulful, melancholic, yearning]",
+        "seed": 151221889645673,
+        "control_after_generate": "randomize",
+        "temperature": 1,
+        "topk": 250,
+        "cfg_scale": 2.5,
+        "max_audio_length": 60,
+        "bpm": 0,
+        "symbolic_output": "",
+        "save_symbolic": "0",
+        "unload_after_generate": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      83,
+      72,
+      0,
+      73,
+      0,
+      "MULACOVER_PIPE"
+    ],
+    [
+      84,
+      73,
+      0,
+      74,
+      0,
+      "AUDIO"
+    ],
+    [
+      85,
+      79,
+      0,
+      73,
+      1,
+      "AUDIO"
+    ],
+    [
+      86,
+      82,
+      0,
+      73,
+      2,
+      "MIDI"
+    ],
+    [
+      87,
+      83,
+      0,
+      73,
+      3,
+      "MIDI"
+    ],
+    [
+      88,
+      84,
+      0,
+      73,
+      4,
+      "MIDI"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9646149645000092,
+      "offset": [
+        580.4056879346128,
+        -119.69967487398793
+      ]
+    },
+    "frontendVersion": "1.52.7",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
