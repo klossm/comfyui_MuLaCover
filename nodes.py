@@ -4,6 +4,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import sys
 import gc
+import json
 import time
 import uuid
 import traceback
@@ -55,12 +56,70 @@ except Exception:
     IMPORT_ERROR = traceback.format_exc()
 
 
+# ── 用户中断响应：点 ComfyUI Cancel 立刻终止采样 ──────────────────────
+def _check_interrupt():
+    """每步回调都检查一次（内部只是读标志位，开销可忽略）。"""
+    try:
+        import comfy.model_management as _mm
+        _mm.throw_exception_if_processing_interrupted()
+    except ImportError:
+        pass
+
+
+# ── 显存协调（借鉴 ComfyUI-YuE2 的 free_yue2_first 模式）──────────────
+# 我们的管线是裸 torch 加载，绕过了 ComfyUI 的模型管理——comfy 在显存
+# 不足时只会为"自己管理的模型"做腾退，不会为我们腾。混用工作流
+# （SD 出参考图/人声分离后接 MuLaCover）时，先手动请 comfy 卸载它的
+# 模型，12GB 卡才装得下 HeartMuLa-3B。后续节点再用到 SD 时 comfy
+# 会自行重载（代价是几秒加载时间），无功能损失。
+def _free_comfy_models():
+    try:
+        import comfy.model_management as mm
+        mm.unload_all_models()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        print("[MuLaCover] 已请 ComfyUI 卸载其管理的模型，为生成腾出显存")
+    except Exception as e:
+        print(f"[MuLaCover][WARN] 释放 ComfyUI 模型失败（忽略，继续生成）: {e}")
+
+
+# ── TF32 快速转谱（借鉴 ComfyUI-YuE2 的 runtime_flags 存/恢复模式）────
+# YourMT3 + ChordNet 转谱全程 fp32；Ampere 及以上显卡开 TF32 后 matmul
+# 约 2~4 倍提速，对"输出音符/和弦符号"这类粗粒度结果无实际影响。
+# 主生成模型是 bf16（TF32 不参与），HeartCodec 解码不包在开关内，
+# 音质路径完全不受影响。非 Ampere 卡上 TF32 是空操作，无副作用。
+def _wrap_fast_fp32(pipe):
+    """给 _symbolic_condition 套 TF32 开关（幂等）；是否生效由
+    pipe._mc_fast_fp32 决定，生成节点每次运行前设置。"""
+    if getattr(pipe, "_mc_fast_fp32_wrapped", False):
+        return
+    orig = pipe._symbolic_condition
+
+    def symcond_fast(*args, **kw):
+        if not getattr(pipe, "_mc_fast_fp32", False):
+            return orig(*args, **kw)
+        saved = (torch.backends.cuda.matmul.allow_tf32,
+                 torch.backends.cudnn.allow_tf32)
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print("[MuLaCover] 转谱阶段 TF32 加速已启用")
+            return orig(*args, **kw)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = saved
+
+    pipe._symbolic_condition = symcond_fast
+    pipe._mc_fast_fp32_wrapped = True
+
+
 # ── 进度桥接：拦截 mulacover 内部 tqdm → 节点进度条 + 控制台单行刷新 ──
 _PBAR_HOOK = {"pbar": None, "seg_start": 10, "seg_end": 90,
               "cur": 10, "last_push": 0.0, "line_open": False}
 
 
 def _push_progress(total, n):
+    _check_interrupt()  # 必须在一切早退 return 之前，保证每步都检查
     hook = _PBAR_HOOK
     pbar = hook["pbar"]
     if pbar is None or not total or not n:
@@ -112,7 +171,7 @@ class _HookedTqdm:
             self._t0 = time.time()
         label = self._desc or "推理"
         if not self._total:
-            print(f"\r[MuLaCover] {label} {self._n} 步   ", end="", flush=True)
+            print(f"\r[MuLaCover] {label} {self._n} 步 ", end="", flush=True)
             _PBAR_HOOK["line_open"] = True
             return
         pct = 100.0 * self._n / self._total
@@ -120,7 +179,7 @@ class _HookedTqdm:
         eta = (self._total - self._n) / rate if rate > 0 else 0.0
         eta_str = f"{eta:.0f}秒" if eta < 60 else f"{eta / 60:.1f}分"
         line = (f"\r[MuLaCover] {label} {self._n}/{self._total} ({pct:.0f}%) "
-                f"| {rate:.1f} it/s | 剩余~{eta_str}   ")
+                f"| {rate:.1f} it/s | 剩余~{eta_str} ")
         if done:
             print(line, flush=True)
             _PBAR_HOOK["line_open"] = False
@@ -152,15 +211,20 @@ class _HookedTqdm:
     def set_postfix_str(self, *a, **k): pass
     def write(self, *a, **k): pass
     def moveto(self, *a, **k): pass
+
     def reset(self, total=None):
         self._n = 0
         self._t0 = None
         if total is not None:
             self._total = int(total)
+
     @property
-    def n(self): return self._n
+    def n(self):
+        return self._n
+
     @property
-    def total(self): return self._total
+    def total(self):
+        return self._total
 
 
 def _install_tqdm_hooks():
@@ -196,6 +260,88 @@ def _restore_tqdm_hooks(hooked):
     _PBAR_HOOK["pbar"] = None
 
 
+# ── 模型完整性校验 ────────────────────────────────────────────────────
+# 利用 safetensors 格式自描述特性精确校验：8B 头长 + header JSON + 数据区
+# 三者之和必须等于文件实际大小，能报出"差多少字节"，对任何版本权重有效。
+
+def _check_safetensors(path: Path):
+    """完整返回 None，否则返回问题字符串（含精确字节数差异）"""
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return f"文件过小（{size}B，疑似空文件或下载中断）"
+        with open(path, "rb") as f:
+            n = int.from_bytes(f.read(8), "little")
+            if n <= 0 or n > 256 * 1024 * 1024:
+                return f"头部长度异常（{n}B），文件已损坏"
+            if size < 8 + n:
+                return f"文件被截断：头区需 {8 + n}B，实际仅 {size}B，请重新下载"
+            header = json.loads(f.read(n))
+        if not isinstance(header, dict):
+            return "header 格式异常"
+        ends = [v["data_offsets"][1] for v in header.values()
+                if isinstance(v, dict) and "data_offsets" in v]
+        if ends:
+            expected = 8 + n + max(ends)
+            if size != expected:
+                missing = expected - size
+                return (f"数据区不完整：应为 {expected}B，实际 {size}B"
+                        f"（差 {missing}B），请重新下载该分片")
+        return None
+    except PermissionError:
+        return "无读取权限（可能被杀毒软件或占用中）"
+    except Exception as e:
+        return f"无法解析（{type(e).__name__}: {e}）"
+
+
+def _check_main_model(root: Path, model_sub: Path):
+    """主生成模型：index.json 的 weight_map 逐分片精确校验"""
+    problems = []
+    idx = model_sub / "model.safetensors.index.json"
+    if not idx.is_file():
+        problems.append(f"{model_sub.name}/ 缺少 model.safetensors.index.json")
+    else:
+        try:
+            wm = json.loads(idx.read_text(encoding="utf-8")).get("weight_map") or {}
+            shards = sorted(set(wm.values()))
+            if not shards:
+                problems.append("index.json 里没有 weight_map，文件可能下载有误")
+            for sh in shards:
+                p = model_sub / sh
+                if not p.is_file():
+                    problems.append(f"{model_sub.name}/{sh} 缺失")
+                else:
+                    err = _check_safetensors(p)
+                    if err:
+                        problems.append(f"{model_sub.name}/{sh}: {err}")
+            if not problems:
+                print(f"[MuLaCover] 主模型完整性校验：{len(shards)} 个分片全部通过")
+        except Exception as e:
+            problems.append(f"index.json 解析失败: {e}")
+    for fname in ("config.json", "tokenizer.json"):
+        if not (model_sub / fname).is_file():
+            problems.append(f"{model_sub.name}/{fname} 缺失")
+    return problems
+
+
+def _check_transcriptor(root: Path):
+    """转谱模型检查 —— 仅参考音频模式调用；MIDI 模式完全不需要这些文件"""
+    problems = []
+    tr = root / "SymbolicTranscriptor"
+    if not tr.is_dir():
+        return ["缺少目录 SymbolicTranscriptor/（转谱模型整套缺失）"]
+    if not (tr / "yourmt3" / "last.ckpt").is_file():
+        problems.append("缺少 SymbolicTranscriptor/yourmt3/last.ckpt（YourMT3 转谱权重，约 2.4GB）")
+    chord_dir = tr / "chord"
+    if not chord_dir.is_dir():
+        problems.append("缺少 SymbolicTranscriptor/chord/ 目录（和弦识别模型）")
+    else:
+        n = len(list(chord_dir.glob("*.sdict")))
+        if n < 5:
+            problems.append(f"chord/ 只找到 {n} 个 .sdict，需要 5 个（ChordNet 五折模型）")
+    return problems
+
+
 # ── 管线缓存 ──────────────────────────────────────────────────────────
 _PIPES = {}
 _PIPE_KEYS = {}
@@ -221,7 +367,7 @@ def _unload_pipe(pipe=None):
             key = _PIPE_KEYS.pop(id(pipe), None)
             if key is not None and key in _PIPES:
                 del _PIPES[key]
-                removed = 1
+            removed = 1
         else:
             for p in list(_PIPES.values()):
                 try:
@@ -239,7 +385,8 @@ def _unload_pipe(pipe=None):
 
 
 # ── 常驻模式：官方 _release 在 lazy_load=True 时丢弃模型（磁盘重载），
-#    这里改为转存 CPU 内存，各阶段入口搬回 GPU ─────────────────────────
+# 这里改为转存 CPU 内存，各阶段入口搬回 GPU ─────────────────────────
+
 def _remove_accel_hooks(module):
     try:
         from accelerate.hooks import remove_hook_from_module
@@ -282,7 +429,6 @@ def _drop_by_name(pipe, name):
 def _enable_resident_mode(pipe):
     if getattr(pipe, "_resident_mode", False):
         return
-
     orig_release = pipe._release
     orig_forward = pipe._forward
     orig_postprocess = pipe.postprocess
@@ -341,9 +487,9 @@ def _enable_resident_mode(pipe):
         orig_load_qwen()
         _restore("qwen")
 
-    def symcond(inputs):
+    def symcond(*args, **kw):
         _restore("transcriptor")
-        return orig_symcond(inputs)
+        return orig_symcond(*args, **kw)
 
     pipe._release = _to_cpu
     pipe._forward = fwd
@@ -356,6 +502,7 @@ def _enable_resident_mode(pipe):
 
 
 # ── 通用工具 ──────────────────────────────────────────────────────────
+
 def _to_int(v, default):
     try:
         s = str(v).strip()
@@ -402,14 +549,39 @@ def _midi_path(v):
         return None
     if isinstance(v, dict):
         v = v.get("path") or v.get("midi_path") or v.get("value")
-    if isinstance(v, (list, tuple)):
-        v = v[0] if v else None
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else None
     if v is None:
         return None
     return _resolve_input_file(str(v))
 
 
+# ── 风格标签清洗 ──────────────────────────────────────────────────────
+
+def _clean_style_field(value):
+    v = str(value or "")
+    v = v.replace(";", ",").replace("[", "(").replace("]", ")")
+    return " ".join(v.split())
+
+
+def _validate_tags_string(tags):
+    """用户在生成节点直接手贴整串 tags 时的括号平衡校验"""
+    depth = 0
+    for i, ch in enumerate(str(tags)):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(
+                    f"tags 第 {i + 1} 个字符出现多余的 ']' —— "
+                    f"字段值内不能使用方括号（会被当成字段结束），请改用圆括号")
+    if depth != 0:
+        raise ValueError("tags 方括号不配对：'[' 比 ']' 多，请检查每一段 field:[value]")
+
+
 # ── 节点：模型加载 ────────────────────────────────────────────────────
+
 class MuLaCoverLoader:
     @classmethod
     def INPUT_TYPES(cls):
@@ -433,12 +605,11 @@ class MuLaCoverLoader:
     def load(self, device, main_dtype, keep_in_ram):
         if not HAS_MULACOVER:
             raise RuntimeError(f"导入 mulacover 失败：\n{IMPORT_ERROR}")
-
         root = MULACOVER_MODEL_DIR
         if not root.is_dir():
             raise FileNotFoundError(
                 f"模型目录不存在: {root}\n"
-                f"布局: MuLaCover(-oss)\\ / HeartCodec-oss\\ / "
+                f"布局: MuLaCover\\ / HeartCodec-oss\\ / "
                 f"Qwen3-Embedding-0.6B\\ / SymbolicTranscriptor\\")
 
         model_sub = root / "MuLaCover"
@@ -446,9 +617,17 @@ class MuLaCoverLoader:
             model_sub = root / "MuLaCover-oss"
         if not model_sub.is_dir():
             raise FileNotFoundError(f"找不到 MuLaCover\\ 或 MuLaCover-oss\\: {root}")
+
+        problems = _check_main_model(root, model_sub)
         for sub in ("HeartCodec-oss", "Qwen3-Embedding-0.6B"):
             if not (root / sub).is_dir():
-                raise FileNotFoundError(f"缺少 {root / sub}")
+                problems.append(f"缺少目录 {sub}/")
+        if problems:
+            raise FileNotFoundError(
+                f"模型文件不完整（{len(problems)} 个问题）：\n- "
+                + "\n- ".join(problems)
+                + "\n\n请对照插件 README『模型下载』一节补齐；"
+                  "重跑同一条 hf download 命令即可断点续传补齐分片")
 
         dt = {"bfloat16": torch.bfloat16,
               "float16": torch.float16,
@@ -462,19 +641,19 @@ class MuLaCoverLoader:
         pipe = MuLaCoverGenPipeline.from_pretrained(
             str(root),
             device=torch.device(device),
-            dtype={"mulacover": dt,
-                   "codec": torch.float32,
-                   "qwen": torch.float32,
-                   "transcriptor": torch.float32},
+            dtype={"mulacover": dt, "codec": torch.float32,
+                   "qwen": torch.float32, "transcriptor": torch.float32},
             lazy_load=True,
         )
         if keep_in_ram and device.startswith("cuda"):
             _enable_resident_mode(pipe)
+        _wrap_fast_fp32(pipe)  # TF32 开关壳（是否生效由生成节点每次设置）
         _register_pipe(pipe, key)
         return (pipe,)
 
 
 # ── 节点：风格标签 ────────────────────────────────────────────────────
+
 class MuLaCoverStyleTags:
     @classmethod
     def INPUT_TYPES(cls):
@@ -483,7 +662,8 @@ class MuLaCoverStyleTags:
                 "topic": ("STRING", {"default": "heartbreak and longing"}),
                 "genre": ("STRING", {"default": "psychedelic synthwave, city pop"}),
                 "instrument": ("STRING", {"default": "synth bass, gated reverb drums, "
-                                                    "electric guitar, Rhodes piano, saxophone"}),
+                                                     "electric guitar, Rhodes piano, "
+                                                     "muted guitar"}),
                 "mood": ("STRING", {"default": "melancholic, explosive, grand"}),
             }
         }
@@ -494,11 +674,24 @@ class MuLaCoverStyleTags:
     CATEGORY = "MuLaCover"
 
     def build(self, topic, genre, instrument, mood):
-        return (f"topic:[{topic}]; genre:[{genre}]; "
-                f"instrument:[{instrument}]; mood:[{mood}]",)
+        topic = _clean_style_field(topic)
+        genre = _clean_style_field(genre)
+        instrument = _clean_style_field(instrument)
+        mood = _clean_style_field(mood)
+        if not any((topic, genre, instrument, mood)):
+            raise ValueError("风格标签四个字段全为空，至少填写一个字段")
+        parts = []
+        for name, v in (("topic", topic), ("genre", genre),
+                        ("instrument", instrument), ("mood", mood)):
+            if not v:
+                print(f"[MuLaCover][WARN] 风格字段 {name} 为空，已自动填入 unspecified")
+                v = "unspecified"
+            parts.append(f"{name}:[{v}]")
+        return ("; ".join(parts),)
 
 
 # ── 节点：MIDI 加载（下拉选择 + 上传按钮，机制同官方 LoadAudio）──────
+
 class MuLaCoverLoadMIDI:
     @classmethod
     def INPUT_TYPES(cls):
@@ -528,7 +721,9 @@ class MuLaCoverLoadMIDI:
                 f"请用上传按钮选择文件，或放到 ComfyUI/input/ 后刷新页面")
         return (str(path),)
 
+
 # ── 节点：生成 ────────────────────────────────────────────────────────
+
 class MuLaCoverGenerate:
     @classmethod
     def INPUT_TYPES(cls):
@@ -541,21 +736,33 @@ class MuLaCoverGenerate:
                 "tags": ("STRING", {
                     "multiline": True,
                     "default": "topic:[longing]; genre:[contemporary R&B, neo soul]; "
-                               "instrument:[808 bass, Rhodes piano, saxophone, female vocal]; "
-                               "mood:[sultry, soulful, yearning]"}),
+                               "instrument:[808 bass, Rhodes piano, muted guitar, "
+                               "female vocal]; mood:[sultry, soulful, yearning]"}),
                 "seed": ("INT", {"default": 42, "min": 0,
                                  "max": 0xFFFFFFFFFFFFFFFF,
                                  "control_after_generate": True}),
                 "temperature": ("FLOAT", {"default": 1.0, "min": 0.01,
                                           "max": 2.0, "step": 0.01}),
-                "topk": ("INT", {"default": 250, "min": 1, "max": 1000}),
+                "topk": ("INT", {"default": 250, "min": 1, "max": 8191,
+                                 "tooltip": "官方合法范围 1~8191"}),
                 "cfg_scale": ("FLOAT", {"default": 1.5, "min": 1.0,
-                                        "max": 10.0, "step": 0.1}),
+                                        "max": 5.0, "step": 0.1}),
                 "max_audio_length": ("FLOAT", {
                     "default": 300.0, "min": 10.0, "max": 480.0, "step": 1.0,
                     "tooltip": "生成时长（秒），范围 10~480"}),
                 "bpm": ("INT", {"default": 0, "min": 0, "max": 300,
                                 "tooltip": "仅参考音频模式有效；0=自动检测"}),
+                "free_vram_before": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "生成前请 ComfyUI 卸载其管理的模型（SD 等），为 "
+                               "HeartMuLa-3B 腾显存。我们的管线绕过 comfy 模型管理，"
+                               "混用工作流时 comfy 不会自动腾退；12GB 卡建议开启。"
+                               "后续节点再用到那些模型会自动重载（多几秒）"}),
+                "fast_fp32_transcribe": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "参考音频模式的转谱/和弦识别阶段启用 TF32 加速"
+                               "（Ampere 及以上约 2~4 倍）。不影响主模型与音质；"
+                               "需逐位复现官方结果时关闭"}),
                 "symbolic_output": ("STRING", {
                     "default": "mulacover",
                     "tooltip": "转谱产物输出目录：相对 ComfyUI/output，"
@@ -582,11 +789,12 @@ class MuLaCoverGenerate:
     OUTPUT_NODE = True
 
     def generate(self, pipe, lyrics, tags, seed, temperature, topk, cfg_scale,
-                 max_audio_length, bpm, symbolic_output, save_symbolic,
-                 unload_after_generate,
+                 max_audio_length, bpm, free_vram_before, fast_fp32_transcribe,
+                 symbolic_output, save_symbolic, unload_after_generate,
                  ref_audio=None, melody_midi=None, chord_midi=None, drum_midi=None):
-
         _fix_numpy_compat()
+
+        _validate_tags_string(tags)
 
         pbar = None
         try:
@@ -616,12 +824,28 @@ class MuLaCoverGenerate:
             raise ValueError("ref_audio 与 MIDI 输入互斥（官方约束）")
         if has_audio:
             mode = "reference_audio"
+            tr_problems = _check_transcriptor(MULACOVER_MODEL_DIR)
+            if tr_problems:
+                raise FileNotFoundError(
+                    "参考音频模式需要转谱模型，当前缺失：\n- "
+                    + "\n- ".join(tr_problems)
+                    + "\n\n（只用 MIDI 模式则无需这些文件，可忽略本错误）")
         elif has_mel or has_chd or has_drm:
             mode = "midi"
             if not (has_mel and has_chd):
                 raise ValueError("MIDI 模式必须同时连接 melody_midi 与 chord_midi")
         else:
             raise ValueError("请连接 ref_audio(AUDIO) 或 melody/chord(MIDI) 输入端")
+
+        # TF32 开关：转谱壳每次调用时读取此标志（MIDI 模式不进转谱，无影响）
+        try:
+            pipe._mc_fast_fp32 = bool(fast_fp32_transcribe)
+        except Exception:
+            pass
+
+        # 显存协调：在真正需要显存前请 comfy 腾地方（借鉴 YuE2 free_yue2_first）
+        if free_vram_before and mode == "reference_audio":
+            _free_comfy_models()
 
         cond = {"lyrics": lyrics, "tags": tags}
         ref_tmp = None
@@ -665,23 +889,27 @@ class MuLaCoverGenerate:
             kwargs["symbolic_save_dir"] = str(run_sym)
             symbolic_dir_str = str(run_sym)
 
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-
+        _devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
         print(f"[MuLaCover] 开始生成 | mode={mode} | seed={seed} | 时长={seconds:g}s")
         t0 = time.time()
         hooked = _install_tqdm_hooks()
         try:
-            pipe(cond, **kwargs)
-        except Exception as e:
-            if "out of memory" not in str(e).lower():
-                raise
-            print("[MuLaCover] VRAM OOM，清理显存后重试...")
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            pipe(cond, **kwargs)
+            with torch.no_grad():
+                with torch.random.fork_rng(devices=_devices):
+                    torch.manual_seed(seed)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed_all(seed)
+                    try:
+                        pipe(cond, **kwargs)
+                    except Exception as e:
+                        if "out of memory" not in str(e).lower():
+                            raise
+                        _check_interrupt()  # OOM 重试前确认用户没点取消
+                        print("[MuLaCover] VRAM OOM，清理显存后重试...")
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        pipe(cond, **kwargs)
         finally:
             _restore_tqdm_hooks(hooked)
 
@@ -701,9 +929,7 @@ class MuLaCoverGenerate:
         audio = {"waveform": wav.unsqueeze(0), "sample_rate": sr}
 
         ui = {"audio": [{"filename": out_wav.name,
-                         "subfolder": "mulacover",
-                         "type": "temp"}]}
-
+                         "subfolder": "mulacover", "type": "temp"}]}
         if ref_tmp is not None:
             try:
                 ref_tmp.unlink()
@@ -716,7 +942,6 @@ class MuLaCoverGenerate:
 
         if pbar:
             pbar.update_absolute(100)
-
         return {"ui": ui, "result": (audio, symbolic_dir_str)}
 
 
@@ -726,6 +951,7 @@ NODE_CLASS_MAPPINGS = {
     "MuLaCoverLoadMIDI": MuLaCoverLoadMIDI,
     "MuLaCoverGenerate": MuLaCoverGenerate,
 }
+
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MuLaCoverLoader": "MuLaCover 模型加载",
     "MuLaCoverStyleTags": "MuLaCover 风格标签",
