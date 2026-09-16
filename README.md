@@ -103,9 +103,9 @@ venv / 系统环境用户：激活对应环境后执行同样的两条 pip 命�
 
     hf download Qwen/Qwen3-Embedding-0.6B --local-dir ComfyUI/models/MuLaCover/Qwen3-Embedding-0.6B
 
-（4）转谱模型（只用 MIDI 模式可跳过，省约 10GB 磁盘）
+（4）转谱模型（只用 MIDI 模式可跳过）
 
-YourMT3 转谱权重（约 2.4GB）
+YourMT3 转谱权重
     https://huggingface.co/spaces/mimbres/YourMT3
 
     mkdir -p ComfyUI/models/MuLaCover/SymbolicTranscriptor/yourmt3
